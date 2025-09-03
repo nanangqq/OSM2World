@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSM2World JavaScript Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .output {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            max-height: 400px;
+        }
+    </style>
+</head>
+<body>
+    <h1>OSM2World JavaScript Demo</h1>
+    <p>This demo shows how to use the OSM2World JavaScript API to convert OpenStreetMap data to 3D models in the browser.</p>
+    
+    <form id="convertForm">
+        <div class="form-group">
+            <label for="inputMode">Input Mode:</label>
+            <select id="inputMode" onchange="toggleInputMode()">
+                <option value="bounds">Bounding Box</option>
+                <option value="tile">Tile</option>
+                <option value="data">Direct OSM Data</option>
+            </select>
+        </div>
+
+        <div id="boundsInput" class="input-mode">
+            <div class="form-group">
+                <label for="bounds">Bounding Box (minLat,minLon maxLat,maxLon):</label>
+                <input type="text" id="bounds" placeholder="52.5,13.3 52.6,13.4" 
+                       value="52.5,13.3 52.6,13.4">
+            </div>
+        </div>
+
+        <div id="tileInput" class="input-mode" style="display: none;">
+            <div class="form-group">
+                <label for="tileZoom">Zoom Level:</label>
+                <input type="number" id="tileZoom" min="0" max="18" value="15">
+            </div>
+            <div class="form-group">
+                <label for="tileX">Tile X:</label>
+                <input type="number" id="tileX" min="0" value="17602">
+            </div>
+            <div class="form-group">
+                <label for="tileY">Tile Y:</label>
+                <input type="number" id="tileY" min="0" value="10747">
+            </div>
+        </div>
+
+        <div id="dataInput" class="input-mode" style="display: none;">
+            <div class="form-group">
+                <label for="osmData">OSM Data (XML or JSON):</label>
+                <textarea id="osmData" rows="6" placeholder="Paste OSM XML or JSON data here..."></textarea>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="outputFormat">Output Format:</label>
+            <select id="outputFormat">
+                <option value="JSON">JSON (Custom)</option>
+                <option value="GLTF">GLTF</option>
+                <option value="GLB">GLB</option>
+                <option value="OBJ">OBJ</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="lod">Level of Detail:</label>
+            <select id="lod">
+                <option value="0">LOD 0 (Highest Detail)</option>
+                <option value="1">LOD 1</option>
+                <option value="2" selected>LOD 2</option>
+                <option value="3">LOD 3</option>
+                <option value="4">LOD 4 (Lowest Detail)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="resolution">Resolution (width,height):</label>
+            <input type="text" id="resolution" placeholder="800,600" value="800,600">
+        </div>
+
+        <button type="submit">Convert</button>
+    </form>
+
+    <div id="output" class="output" style="display: none;"></div>
+
+    <script type="module">
+        import { createConverter, ConvertCommand, LatLonBounds, TileNumber, Resolution } from '../src/index.js';
+
+        function toggleInputMode() {
+            const mode = document.getElementById('inputMode').value;
+            document.querySelectorAll('.input-mode').forEach(el => el.style.display = 'none');
+            document.getElementById(mode + 'Input').style.display = 'block';
+        }
+
+        function showOutput(content, isError = false) {
+            const output = document.getElementById('output');
+            output.style.display = 'block';
+            output.className = 'output ' + (isError ? 'error' : 'success');
+            output.innerHTML = content;
+        }
+
+        async function handleConvert(event) {
+            event.preventDefault();
+            
+            const button = event.target.querySelector('button');
+            button.disabled = true;
+            button.textContent = 'Converting...';
+
+            try {
+                const inputMode = document.getElementById('inputMode').value;
+                const outputFormat = document.getElementById('outputFormat').value;
+                const lod = parseInt(document.getElementById('lod').value);
+                const resolution = document.getElementById('resolution').value;
+
+                // Create converter
+                const converter = new ConvertCommand();
+                
+                // Set output
+                converter.setOutputFiles([`output.${outputFormat.toLowerCase()}`]);
+                converter.setLevelOfDetail(lod);
+                
+                if (resolution) {
+                    converter.setResolution(resolution);
+                }
+
+                // Set input based on mode
+                if (inputMode === 'bounds') {
+                    const bounds = document.getElementById('bounds').value;
+                    if (bounds) {
+                        converter.setInputBounds(bounds);
+                    }
+                } else if (inputMode === 'tile') {
+                    const zoom = parseInt(document.getElementById('tileZoom').value);
+                    const x = parseInt(document.getElementById('tileX').value);
+                    const y = parseInt(document.getElementById('tileY').value);
+                    converter.setTile(zoom, x, y);
+                } else if (inputMode === 'data') {
+                    const osmData = document.getElementById('osmData').value;
+                    if (osmData) {
+                        // For demo purposes, we'll just pass the raw data
+                        converter.setOSMData(osmData);
+                    }
+                }
+
+                // Perform conversion
+                const result = await converter.convert();
+
+                if (result.success) {
+                    showOutput(`
+                        <h3>Conversion Successful!</h3>
+                        <p>Generated ${Object.keys(result.outputs).length} output(s)</p>
+                        <h4>Results:</h4>
+                        <pre>${JSON.stringify(result, null, 2)}</pre>
+                    `);
+                } else {
+                    showOutput(`
+                        <h3>Conversion Failed</h3>
+                        <p>Error: ${result.error}</p>
+                    `, true);
+                }
+
+            } catch (error) {
+                showOutput(`
+                    <h3>Error</h3>
+                    <p>${error.message}</p>
+                    <pre>${error.stack}</pre>
+                `, true);
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Convert';
+            }
+        }
+
+        // Add event listeners
+        document.getElementById('convertForm').addEventListener('submit', handleConvert);
+
+        // Show initial example
+        showOutput(`
+            <h3>Welcome to OSM2World JavaScript!</h3>
+            <p>This is a browser-compatible port of the OSM2World ConvertCommand functionality.</p>
+            <p>Fill out the form above and click "Convert" to see the JavaScript API in action.</p>
+            <p><strong>Note:</strong> This is a demonstration of the API structure. Full OSM parsing and 3D generation would require additional implementation.</p>
+        `);
+    </script>
+</body>
+</html>

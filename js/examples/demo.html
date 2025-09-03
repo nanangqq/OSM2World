@@ -74,7 +74,7 @@
     <form id="convertForm">
         <div class="form-group">
             <label for="inputMode">Input Mode:</label>
-            <select id="inputMode" onchange="toggleInputMode()">
+            <select id="inputMode">
                 <option value="bounds">Bounding Box</option>
                 <option value="tile">Tile</option>
                 <option value="data">Direct OSM Data</option>
@@ -232,6 +232,7 @@
 
         // Add event listeners
         document.getElementById('convertForm').addEventListener('submit', handleConvert);
+        document.getElementById('inputMode').addEventListener('change', toggleInputMode);
 
         // Show initial example
         showOutput(`

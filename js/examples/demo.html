@@ -68,22 +68,22 @@
     </style>
 </head>
 <body>
-    <h1>OSM2World JavaScript Demo</h1>
-    <p>This demo shows how to use the OSM2World JavaScript API to convert OpenStreetMap data to 3D models in the browser.</p>
+    <h1>OSM2World JavaScript 데모</h1>
+    <p>이 데모는 OSM2World JavaScript API를 사용하여 브라우저에서 OpenStreetMap 데이터를 3D 모델로 변환하는 방법을 보여줍니다.</p>
     
     <form id="convertForm">
         <div class="form-group">
-            <label for="inputMode">Input Mode:</label>
+            <label for="inputMode">입력 모드:</label>
             <select id="inputMode">
-                <option value="bounds">Bounding Box</option>
-                <option value="tile">Tile</option>
-                <option value="data">Direct OSM Data</option>
+                <option value="bounds">경계 상자</option>
+                <option value="tile">타일</option>
+                <option value="data">직접 OSM 데이터</option>
             </select>
         </div>
 
         <div id="boundsInput" class="input-mode">
             <div class="form-group">
-                <label for="bounds">Bounding Box (minLat,minLon maxLat,maxLon):</label>
+                <label for="bounds">경계 상자 (최소위도,최소경도 최대위도,최대경도):</label>
                 <input type="text" id="bounds" placeholder="52.5,13.3 52.6,13.4" 
                        value="52.5,13.3 52.6,13.4">
             </div>
@@ -91,30 +91,34 @@
 
         <div id="tileInput" class="input-mode" style="display: none;">
             <div class="form-group">
-                <label for="tileZoom">Zoom Level:</label>
+                <label for="tileZoom">줌 레벨:</label>
                 <input type="number" id="tileZoom" min="0" max="18" value="15">
             </div>
             <div class="form-group">
-                <label for="tileX">Tile X:</label>
+                <label for="tileX">타일 X:</label>
                 <input type="number" id="tileX" min="0" value="17602">
             </div>
             <div class="form-group">
-                <label for="tileY">Tile Y:</label>
+                <label for="tileY">타일 Y:</label>
                 <input type="number" id="tileY" min="0" value="10747">
             </div>
         </div>
 
         <div id="dataInput" class="input-mode" style="display: none;">
             <div class="form-group">
-                <label for="osmData">OSM Data (XML or JSON):</label>
-                <textarea id="osmData" rows="6" placeholder="Paste OSM XML or JSON data here..."></textarea>
+                <label for="osmFile">OSM 파일 업로드 (XML, JSON, OSM):</label>
+                <input type="file" id="osmFile" accept=".xml,.json,.osm,.osm.xml">
+            </div>
+            <div class="form-group">
+                <label for="osmData">또는 직접 입력 (XML 또는 JSON):</label>
+                <textarea id="osmData" rows="6" placeholder="OSM XML 또는 JSON 데이터를 여기에 붙여넣으세요..."></textarea>
             </div>
         </div>
 
         <div class="form-group">
-            <label for="outputFormat">Output Format:</label>
+            <label for="outputFormat">출력 형식:</label>
             <select id="outputFormat">
-                <option value="JSON">JSON (Custom)</option>
+                <option value="JSON">JSON (사용자 정의)</option>
                 <option value="GLTF">GLTF</option>
                 <option value="GLB">GLB</option>
                 <option value="OBJ">OBJ</option>
@@ -122,22 +126,22 @@
         </div>
 
         <div class="form-group">
-            <label for="lod">Level of Detail:</label>
+            <label for="lod">세부 수준:</label>
             <select id="lod">
-                <option value="0">LOD 0 (Highest Detail)</option>
+                <option value="0">LOD 0 (최고 세부 수준)</option>
                 <option value="1">LOD 1</option>
                 <option value="2" selected>LOD 2</option>
                 <option value="3">LOD 3</option>
-                <option value="4">LOD 4 (Lowest Detail)</option>
+                <option value="4">LOD 4 (최저 세부 수준)</option>
             </select>
         </div>
 
         <div class="form-group">
-            <label for="resolution">Resolution (width,height):</label>
+            <label for="resolution">해상도 (너비,높이):</label>
             <input type="text" id="resolution" placeholder="800,600" value="800,600">
         </div>
 
-        <button type="submit">Convert</button>
+        <button type="submit">변환</button>
     </form>
 
     <div id="output" class="output" style="display: none;"></div>
@@ -158,12 +162,21 @@
             output.innerHTML = content;
         }
 
+        async function readFileAsText(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (event) => resolve(event.target.result);
+                reader.onerror = (error) => reject(error);
+                reader.readAsText(file);
+            });
+        }
+
         async function handleConvert(event) {
             event.preventDefault();
             
             const button = event.target.querySelector('button');
             button.disabled = true;
-            button.textContent = 'Converting...';
+            button.textContent = '변환 중...';
 
             try {
                 const inputMode = document.getElementById('inputMode').value;
@@ -194,10 +207,28 @@
                     const y = parseInt(document.getElementById('tileY').value);
                     converter.setTile(zoom, x, y);
                 } else if (inputMode === 'data') {
-                    const osmData = document.getElementById('osmData').value;
+                    const osmFile = document.getElementById('osmFile').files[0];
+                    let osmData = document.getElementById('osmData').value;
+                    
+                    if (osmFile) {
+                        // 파일이 선택된 경우 파일 내용을 읽어서 사용
+                        try {
+                            osmData = await readFileAsText(osmFile);
+                            showOutput(`
+                                <h3>파일 로드 완료</h3>
+                                <p>파일명: ${osmFile.name}</p>
+                                <p>크기: ${(osmFile.size / 1024).toFixed(2)} KB</p>
+                                <p>변환을 계속 진행합니다...</p>
+                            `);
+                        } catch (error) {
+                            throw new Error(`파일 읽기 실패: ${error.message}`);
+                        }
+                    }
+                    
                     if (osmData) {
-                        // For demo purposes, we'll just pass the raw data
                         converter.setOSMData(osmData);
+                    } else {
+                        throw new Error('OSM 데이터 또는 파일을 제공해주세요');
                     }
                 }
 
@@ -206,27 +237,27 @@
 
                 if (result.success) {
                     showOutput(`
-                        <h3>Conversion Successful!</h3>
-                        <p>Generated ${Object.keys(result.outputs).length} output(s)</p>
-                        <h4>Results:</h4>
+                        <h3>변환 성공!</h3>
+                        <p>${Object.keys(result.outputs).length}개의 출력이 생성되었습니다</p>
+                        <h4>결과:</h4>
                         <pre>${JSON.stringify(result, null, 2)}</pre>
                     `);
                 } else {
                     showOutput(`
-                        <h3>Conversion Failed</h3>
-                        <p>Error: ${result.error}</p>
+                        <h3>변환 실패</h3>
+                        <p>오류: ${result.error}</p>
                     `, true);
                 }
 
             } catch (error) {
                 showOutput(`
-                    <h3>Error</h3>
+                    <h3>오류</h3>
                     <p>${error.message}</p>
                     <pre>${error.stack}</pre>
                 `, true);
             } finally {
                 button.disabled = false;
-                button.textContent = 'Convert';
+                button.textContent = '변환';
             }
         }
 
@@ -236,10 +267,10 @@
 
         // Show initial example
         showOutput(`
-            <h3>Welcome to OSM2World JavaScript!</h3>
-            <p>This is a browser-compatible port of the OSM2World ConvertCommand functionality.</p>
-            <p>Fill out the form above and click "Convert" to see the JavaScript API in action.</p>
-            <p><strong>Note:</strong> This is a demonstration of the API structure. Full OSM parsing and 3D generation would require additional implementation.</p>
+            <h3>OSM2World JavaScript에 오신 것을 환영합니다!</h3>
+            <p>이것은 OSM2World ConvertCommand 기능의 브라우저 호환 포트입니다.</p>
+            <p>위의 양식을 작성하고 "변환"을 클릭하여 JavaScript API를 실제로 확인해보세요.</p>
+            <p><strong>참고:</strong> 이것은 API 구조의 데모입니다. 완전한 OSM 파싱 및 3D 생성을 위해서는 추가 구현이 필요합니다.</p>
         `);
     </script>
 </body>

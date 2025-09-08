@@ -171,6 +171,27 @@
             });
         }
 
+        function createDownloadButton(data, filename, mimeType) {
+            const blob = new Blob([data], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            
+            const downloadButton = document.createElement('button');
+            downloadButton.textContent = `${filename} 다운로드`;
+            downloadButton.style.marginTop = '10px';
+            downloadButton.style.backgroundColor = '#28a745';
+            downloadButton.onclick = () => {
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+            
+            return downloadButton;
+        }
+
         async function handleConvert(event) {
             event.preventDefault();
             
@@ -236,12 +257,42 @@
                 const result = await converter.convert();
 
                 if (result.success) {
-                    showOutput(`
+                    let outputHtml = `
                         <h3>변환 성공!</h3>
                         <p>${Object.keys(result.outputs).length}개의 출력이 생성되었습니다</p>
-                        <h4>결과:</h4>
-                        <pre>${JSON.stringify(result, null, 2)}</pre>
-                    `);
+                    `;
+
+                    // GLB 형식인 경우 다운로드 버튼 생성
+                    if (outputFormat === 'GLB') {
+                        const outputKey = Object.keys(result.outputs)[0];
+                        const outputData = result.outputs[outputKey];
+                        
+                        if (outputData && outputData.isBinary) {
+                            outputHtml += `
+                                <h4>GLB 파일 생성 완료</h4>
+                                <p>파일 크기: ${(outputData.data.byteLength / 1024).toFixed(2)} KB</p>
+                                <div id="downloadContainer"></div>
+                            `;
+                            
+                            showOutput(outputHtml);
+                            
+                            // 다운로드 버튼 추가
+                            const downloadContainer = document.getElementById('downloadContainer');
+                            const downloadButton = createDownloadButton(
+                                outputData.data, 
+                                outputData.filename, 
+                                'model/gltf-binary'
+                            );
+                            downloadContainer.appendChild(downloadButton);
+                        } else {
+                            outputHtml += `<h4>결과:</h4><pre>${JSON.stringify(result, null, 2)}</pre>`;
+                            showOutput(outputHtml);
+                        }
+                    } else {
+                        // 다른 형식은 기존처럼 JSON으로 표시
+                        outputHtml += `<h4>결과:</h4><pre>${JSON.stringify(result, null, 2)}</pre>`;
+                        showOutput(outputHtml);
+                    }
                 } else {
                     showOutput(`
                         <h3>변환 실패</h3>

@@ -331,22 +331,126 @@ export class ConvertCommand {
      * Generate GLTF/GLB output
      */
     generateGLTFOutput(format, filename) {
-        // Placeholder - would integrate with actual GLTF generation
-        return {
-            format: format,
-            filename: filename,
-            data: {
-                asset: { version: "2.0", generator: "OSM2World-JS" },
-                scenes: [{ nodes: [] }],
-                nodes: [],
-                meshes: [],
-                materials: [],
-                textures: [],
-                buffers: [],
-                bufferViews: [],
-                accessors: []
-            }
+        const gltfData = {
+            asset: { version: "2.0", generator: "OSM2World-JS" },
+            scenes: [{ nodes: [] }],
+            nodes: [],
+            meshes: [],
+            materials: [],
+            textures: [],
+            buffers: [],
+            bufferViews: [],
+            accessors: []
         };
+
+        // Add actual scene data if available
+        if (this.scene && this.scene.objects) {
+            this.scene.objects.forEach((obj, index) => {
+                // 노드 추가
+                gltfData.nodes.push({
+                    name: obj.id || `object_${index}`,
+                    mesh: index
+                });
+                
+                // 메시 추가
+                if (obj.coordinates && obj.coordinates.length > 0) {
+                    const mesh = {
+                        name: obj.id || `mesh_${index}`,
+                        primitives: [{
+                            attributes: {
+                                POSITION: index * 2,
+                                NORMAL: index * 2 + 1
+                            },
+                            mode: 4 // TRIANGLES
+                        }]
+                    };
+                    
+                    if (obj.material) {
+                        mesh.primitives[0].material = index;
+                        
+                        // 재질 추가
+                        gltfData.materials.push({
+                            name: obj.material.name || `material_${index}`,
+                            pbrMetallicRoughness: {
+                                baseColorFactor: obj.material.color || [0.5, 0.5, 0.5, 1.0],
+                                metallicFactor: 0.0,
+                                roughnessFactor: 0.8
+                            }
+                        });
+                    }
+                    
+                    gltfData.meshes.push(mesh);
+                }
+            });
+            
+            // 씬에 노드 추가
+            gltfData.scenes[0].nodes = gltfData.nodes.map((_, index) => index);
+        }
+
+        if (format === 'GLB') {
+            // GLB 바이너리 형식으로 변환
+            return {
+                format: format,
+                filename: filename,
+                data: this.generateGLBBinary(gltfData),
+                isBinary: true
+            };
+        } else {
+            // GLTF JSON 형식
+            return {
+                format: format,
+                filename: filename,
+                data: gltfData,
+                isBinary: false
+            };
+        }
+    }
+
+    /**
+     * Generate GLB binary format
+     */
+    generateGLBBinary(gltfData) {
+        const jsonString = JSON.stringify(gltfData);
+        const jsonBuffer = new TextEncoder().encode(jsonString);
+        
+        // JSON 청크 크기를 4바이트 정렬
+        const jsonLength = Math.ceil(jsonBuffer.length / 4) * 4;
+        const alignedJsonBuffer = new Uint8Array(jsonLength);
+        alignedJsonBuffer.set(jsonBuffer);
+        
+        // GLB 헤더 생성
+        const header = new ArrayBuffer(12);
+        const headerView = new DataView(header);
+        
+        // GLB 매직 넘버 (0x46546C67 = "glTF")
+        headerView.setUint32(0, 0x46546C67, true);
+        // 버전 (2)
+        headerView.setUint32(4, 2, true);
+        // 총 길이 (헤더 + JSON 청크 헤더 + JSON 데이터)
+        headerView.setUint32(8, 12 + 8 + jsonLength, true);
+        
+        // JSON 청크 헤더
+        const jsonChunkHeader = new ArrayBuffer(8);
+        const jsonChunkView = new DataView(jsonChunkHeader);
+        // JSON 청크 길이
+        jsonChunkView.setUint32(0, jsonLength, true);
+        // JSON 청크 타입 (0x4E4F534A = "JSON")
+        jsonChunkView.setUint32(4, 0x4E4F534A, true);
+        
+        // 모든 버퍼 결합
+        const totalLength = header.byteLength + jsonChunkHeader.byteLength + alignedJsonBuffer.byteLength;
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        
+        result.set(new Uint8Array(header), offset);
+        offset += header.byteLength;
+        
+        result.set(new Uint8Array(jsonChunkHeader), offset);
+        offset += jsonChunkHeader.byteLength;
+        
+        result.set(alignedJsonBuffer, offset);
+        
+        return result;
     }
 
     /**

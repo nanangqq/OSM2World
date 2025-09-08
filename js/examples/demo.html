@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSM2World JavaScript Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .output {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            max-height: 400px;
+        }
+    </style>
+</head>
+<body>
+    <h1>OSM2World JavaScript 데모</h1>
+    <p>이 데모는 OSM2World JavaScript API를 사용하여 브라우저에서 OpenStreetMap 데이터를 3D 모델로 변환하는 방법을 보여줍니다.</p>
+    
+    <form id="convertForm">
+        <div class="form-group">
+            <label for="inputMode">입력 모드:</label>
+            <select id="inputMode">
+                <option value="bounds">경계 상자</option>
+                <option value="tile">타일</option>
+                <option value="data">직접 OSM 데이터</option>
+            </select>
+        </div>
+
+        <div id="boundsInput" class="input-mode">
+            <div class="form-group">
+                <label for="bounds">경계 상자 (최소위도,최소경도 최대위도,최대경도):</label>
+                <input type="text" id="bounds" placeholder="52.5,13.3 52.6,13.4" 
+                       value="52.5,13.3 52.6,13.4">
+            </div>
+        </div>
+
+        <div id="tileInput" class="input-mode" style="display: none;">
+            <div class="form-group">
+                <label for="tileZoom">줌 레벨:</label>
+                <input type="number" id="tileZoom" min="0" max="18" value="15">
+            </div>
+            <div class="form-group">
+                <label for="tileX">타일 X:</label>
+                <input type="number" id="tileX" min="0" value="17602">
+            </div>
+            <div class="form-group">
+                <label for="tileY">타일 Y:</label>
+                <input type="number" id="tileY" min="0" value="10747">
+            </div>
+        </div>
+
+        <div id="dataInput" class="input-mode" style="display: none;">
+            <div class="form-group">
+                <label for="osmFile">OSM 파일 업로드 (XML, JSON, OSM):</label>
+                <input type="file" id="osmFile" accept=".xml,.json,.osm,.osm.xml">
+            </div>
+            <div class="form-group">
+                <label for="osmData">또는 직접 입력 (XML 또는 JSON):</label>
+                <textarea id="osmData" rows="6" placeholder="OSM XML 또는 JSON 데이터를 여기에 붙여넣으세요..."></textarea>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="outputFormat">출력 형식:</label>
+            <select id="outputFormat">
+                <option value="JSON">JSON (사용자 정의)</option>
+                <option value="GLTF">GLTF</option>
+                <option value="GLB">GLB</option>
+                <option value="OBJ">OBJ</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="lod">세부 수준:</label>
+            <select id="lod">
+                <option value="0">LOD 0 (최고 세부 수준)</option>
+                <option value="1">LOD 1</option>
+                <option value="2" selected>LOD 2</option>
+                <option value="3">LOD 3</option>
+                <option value="4">LOD 4 (최저 세부 수준)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="resolution">해상도 (너비,높이):</label>
+            <input type="text" id="resolution" placeholder="800,600" value="800,600">
+        </div>
+
+        <button type="submit">변환</button>
+    </form>
+
+    <div id="output" class="output" style="display: none;"></div>
+
+    <script type="module">
+        import { createConverter, ConvertCommand, LatLonBounds, TileNumber, Resolution } from '../src/index.js';
+
+        function toggleInputMode() {
+            const mode = document.getElementById('inputMode').value;
+            document.querySelectorAll('.input-mode').forEach(el => el.style.display = 'none');
+            document.getElementById(mode + 'Input').style.display = 'block';
+        }
+
+        function showOutput(content, isError = false) {
+            const output = document.getElementById('output');
+            output.style.display = 'block';
+            output.className = 'output ' + (isError ? 'error' : 'success');
+            output.innerHTML = content;
+        }
+
+        async function readFileAsText(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (event) => resolve(event.target.result);
+                reader.onerror = (error) => reject(error);
+                reader.readAsText(file);
+            });
+        }
+
+        function createDownloadButton(data, filename, mimeType) {
+            const blob = new Blob([data], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            
+            const downloadButton = document.createElement('button');
+            downloadButton.textContent = `${filename} 다운로드`;
+            downloadButton.style.marginTop = '10px';
+            downloadButton.style.backgroundColor = '#28a745';
+            downloadButton.onclick = () => {
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+            
+            return downloadButton;
+        }
+
+        async function handleConvert(event) {
+            event.preventDefault();
+            
+            const button = event.target.querySelector('button');
+            button.disabled = true;
+            button.textContent = '변환 중...';
+
+            try {
+                const inputMode = document.getElementById('inputMode').value;
+                const outputFormat = document.getElementById('outputFormat').value;
+                const lod = parseInt(document.getElementById('lod').value);
+                const resolution = document.getElementById('resolution').value;
+
+                // Create converter
+                const converter = new ConvertCommand();
+                
+                // Set output
+                converter.setOutputFiles([`output.${outputFormat.toLowerCase()}`]);
+                converter.setLevelOfDetail(lod);
+                
+                if (resolution) {
+                    converter.setResolution(resolution);
+                }
+
+                // Set input based on mode
+                if (inputMode === 'bounds') {
+                    const bounds = document.getElementById('bounds').value;
+                    if (bounds) {
+                        converter.setInputBounds(bounds);
+                    }
+                } else if (inputMode === 'tile') {
+                    const zoom = parseInt(document.getElementById('tileZoom').value);
+                    const x = parseInt(document.getElementById('tileX').value);
+                    const y = parseInt(document.getElementById('tileY').value);
+                    converter.setTile(zoom, x, y);
+                } else if (inputMode === 'data') {
+                    const osmFile = document.getElementById('osmFile').files[0];
+                    let osmData = document.getElementById('osmData').value;
+                    
+                    if (osmFile) {
+                        // 파일이 선택된 경우 파일 내용을 읽어서 사용
+                        try {
+                            osmData = await readFileAsText(osmFile);
+                            showOutput(`
+                                <h3>파일 로드 완료</h3>
+                                <p>파일명: ${osmFile.name}</p>
+                                <p>크기: ${(osmFile.size / 1024).toFixed(2)} KB</p>
+                                <p>변환을 계속 진행합니다...</p>
+                            `);
+                        } catch (error) {
+                            throw new Error(`파일 읽기 실패: ${error.message}`);
+                        }
+                    }
+                    
+                    if (osmData) {
+                        converter.setOSMData(osmData);
+                    } else {
+                        throw new Error('OSM 데이터 또는 파일을 제공해주세요');
+                    }
+                }
+
+                // Perform conversion
+                const result = await converter.convert();
+
+                if (result.success) {
+                    let outputHtml = `
+                        <h3>변환 성공!</h3>
+                        <p>${Object.keys(result.outputs).length}개의 출력이 생성되었습니다</p>
+                    `;
+
+                    // GLB 형식인 경우 다운로드 버튼 생성
+                    if (outputFormat === 'GLB') {
+                        const outputKey = Object.keys(result.outputs)[0];
+                        const outputData = result.outputs[outputKey];
+                        
+                        if (outputData && outputData.isBinary) {
+                            outputHtml += `
+                                <h4>GLB 파일 생성 완료</h4>
+                                <p>파일 크기: ${(outputData.data.byteLength / 1024).toFixed(2)} KB</p>
+                                <div id="downloadContainer"></div>
+                            `;
+                            
+                            showOutput(outputHtml);
+                            
+                            // 다운로드 버튼 추가
+                            const downloadContainer = document.getElementById('downloadContainer');
+                            const downloadButton = createDownloadButton(
+                                outputData.data, 
+                                outputData.filename, 
+                                'model/gltf-binary'
+                            );
+                            downloadContainer.appendChild(downloadButton);
+                        } else {
+                            outputHtml += `<h4>결과:</h4><pre>${JSON.stringify(result, null, 2)}</pre>`;
+                            showOutput(outputHtml);
+                        }
+                    } else {
+                        // 다른 형식은 기존처럼 JSON으로 표시
+                        outputHtml += `<h4>결과:</h4><pre>${JSON.stringify(result, null, 2)}</pre>`;
+                        showOutput(outputHtml);
+                    }
+                } else {
+                    showOutput(`
+                        <h3>변환 실패</h3>
+                        <p>오류: ${result.error}</p>
+                    `, true);
+                }
+
+            } catch (error) {
+                showOutput(`
+                    <h3>오류</h3>
+                    <p>${error.message}</p>
+                    <pre>${error.stack}</pre>
+                `, true);
+            } finally {
+                button.disabled = false;
+                button.textContent = '변환';
+            }
+        }
+
+        // Add event listeners
+        document.getElementById('convertForm').addEventListener('submit', handleConvert);
+        document.getElementById('inputMode').addEventListener('change', toggleInputMode);
+
+        // Show initial example
+        showOutput(`
+            <h3>OSM2World JavaScript에 오신 것을 환영합니다!</h3>
+            <p>이것은 OSM2World ConvertCommand 기능의 브라우저 호환 포트입니다.</p>
+            <p>위의 양식을 작성하고 "변환"을 클릭하여 JavaScript API를 실제로 확인해보세요.</p>
+            <p><strong>참고:</strong> 이것은 API 구조의 데모입니다. 완전한 OSM 파싱 및 3D 생성을 위해서는 추가 구현이 필요합니다.</p>
+        `);
+    </script>
+</body>
+</html>

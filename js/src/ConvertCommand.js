@@ -332,84 +332,117 @@ export class ConvertCommand {
      */
     generateGLTFOutput(format, filename) {
         const gltfData = {
-            asset: { version: "2.0", generator: "OSM2World-JS" },
+            asset: { version: "2.0", generator: "OSM2World JavaScript 1.0" },
             scenes: [{ nodes: [] }],
             nodes: [],
             meshes: [],
             materials: [],
-            textures: [],
             buffers: [],
             bufferViews: [],
             accessors: []
         };
 
-        // Add actual scene data if available
+        const bufferData = []; // 모든 바이너리 데이터를 저장
+        let bufferOffset = 0;
+
+        // 기본 재질들 추가
+        this.addDefaultMaterials(gltfData);
+
+        // OSM 객체들을 실제 3D 메시로 변환
         if (this.scene && this.scene.objects) {
-            this.scene.objects.forEach((obj, index) => {
-                // 노드 추가
-                gltfData.nodes.push({
-                    name: obj.id || `object_${index}`,
-                    mesh: index
-                });
-                
-                // 메시 추가
-                if (obj.coordinates && obj.coordinates.length > 0) {
-                    const mesh = {
-                        name: obj.id || `mesh_${index}`,
-                        primitives: [{
-                            attributes: {
-                                POSITION: index * 2,
-                                NORMAL: index * 2 + 1
-                            },
-                            mode: 4 // TRIANGLES
-                        }]
-                    };
-                    
-                    if (obj.material) {
-                        mesh.primitives[0].material = index;
-                        
-                        // 재질 추가
-                        gltfData.materials.push({
-                            name: obj.material.name || `material_${index}`,
-                            pbrMetallicRoughness: {
-                                baseColorFactor: obj.material.color || [0.5, 0.5, 0.5, 1.0],
-                                metallicFactor: 0.0,
-                                roughnessFactor: 0.8
-                            }
-                        });
+            this.scene.objects.forEach((obj, objIndex) => {
+                const meshData = this.generateMeshGeometry(obj);
+                if (meshData && meshData.vertices.length > 0) {
+                    // 버퍼와 accessor 생성
+                    const positionAccessor = this.createAccessor(gltfData, bufferData, meshData.vertices, 'VEC3', bufferOffset);
+                    bufferOffset += meshData.vertices.byteLength;
+
+                    const normalAccessor = this.createAccessor(gltfData, bufferData, meshData.normals, 'VEC3', bufferOffset);
+                    bufferOffset += meshData.normals.byteLength;
+
+                    let colorAccessor = null;
+                    if (meshData.colors) {
+                        colorAccessor = this.createAccessor(gltfData, bufferData, meshData.colors, 'VEC3', bufferOffset);
+                        bufferOffset += meshData.colors.byteLength;
                     }
-                    
-                    gltfData.meshes.push(mesh);
+
+                    // 메시 생성
+                    const primitive = {
+                        attributes: {
+                            POSITION: positionAccessor,
+                            NORMAL: normalAccessor
+                        },
+                        material: this.getMaterialIndexForObject(obj),
+                        mode: 4 // TRIANGLES
+                    };
+
+                    if (colorAccessor !== null) {
+                        primitive.attributes.COLOR_0 = colorAccessor;
+                    }
+
+                    gltfData.meshes.push({
+                        name: obj.id || `mesh_${objIndex}`,
+                        primitives: [primitive]
+                    });
+
+                    // 노드 생성
+                    gltfData.nodes.push({
+                        name: obj.id || `object_${objIndex}`,
+                        mesh: gltfData.meshes.length - 1
+                    });
                 }
             });
-            
-            // 씬에 노드 추가
+
+            // 루트 노드에 모든 노드 추가
             gltfData.scenes[0].nodes = gltfData.nodes.map((_, index) => index);
         }
 
-        if (format === 'GLB') {
-            // GLB 바이너리 형식으로 변환
-            return {
-                format: format,
-                filename: filename,
-                data: this.generateGLBBinary(gltfData),
-                isBinary: true
-            };
-        } else {
-            // GLTF JSON 형식
-            return {
-                format: format,
-                filename: filename,
-                data: gltfData,
-                isBinary: false
-            };
+        // 버퍼 생성
+        if (bufferData.length > 0) {
+            const totalBuffer = this.concatenateBuffers(bufferData);
+            
+            if (format === 'GLB') {
+                // GLB용 - buffer는 BIN 청크에 저장
+                gltfData.buffers.push({
+                    byteLength: totalBuffer.byteLength
+                });
+                
+                return {
+                    format: format,
+                    filename: filename,
+                    data: this.generateGLBBinary(gltfData, totalBuffer),
+                    isBinary: true
+                };
+            } else {
+                // GLTF용 - buffer를 base64로 인코딩
+                const base64Data = this.arrayBufferToBase64(totalBuffer);
+                gltfData.buffers.push({
+                    uri: `data:application/gltf-buffer;base64,${base64Data}`,
+                    byteLength: totalBuffer.byteLength
+                });
+                
+                return {
+                    format: format,
+                    filename: filename,
+                    data: gltfData,
+                    isBinary: false
+                };
+            }
         }
+
+        // 빈 씬인 경우
+        return {
+            format: format,
+            filename: filename,
+            data: gltfData,
+            isBinary: format === 'GLB'
+        };
     }
 
     /**
-     * Generate GLB binary format
+     * Generate GLB binary format with proper BIN chunk
      */
-    generateGLBBinary(gltfData) {
+    generateGLBBinary(gltfData, binBuffer = null) {
         const jsonString = JSON.stringify(gltfData);
         const jsonBuffer = new TextEncoder().encode(jsonString);
         
@@ -417,7 +450,24 @@ export class ConvertCommand {
         const jsonLength = Math.ceil(jsonBuffer.length / 4) * 4;
         const alignedJsonBuffer = new Uint8Array(jsonLength);
         alignedJsonBuffer.set(jsonBuffer);
-        
+        // 남은 공간을 공백으로 채움
+        for (let i = jsonBuffer.length; i < jsonLength; i++) {
+            alignedJsonBuffer[i] = 0x20; // ASCII 공백
+        }
+
+        // BIN 청크 처리
+        let binLength = 0;
+        let alignedBinBuffer = null;
+        if (binBuffer && binBuffer.byteLength > 0) {
+            binLength = Math.ceil(binBuffer.byteLength / 4) * 4;
+            alignedBinBuffer = new Uint8Array(binLength);
+            alignedBinBuffer.set(new Uint8Array(binBuffer));
+            // 남은 공간을 0으로 채움
+            for (let i = binBuffer.byteLength; i < binLength; i++) {
+                alignedBinBuffer[i] = 0x00;
+            }
+        }
+
         // GLB 헤더 생성
         const header = new ArrayBuffer(12);
         const headerView = new DataView(header);
@@ -426,29 +476,41 @@ export class ConvertCommand {
         headerView.setUint32(0, 0x46546C67, true);
         // 버전 (2)
         headerView.setUint32(4, 2, true);
-        // 총 길이 (헤더 + JSON 청크 헤더 + JSON 데이터)
-        headerView.setUint32(8, 12 + 8 + jsonLength, true);
+        // 총 길이 (헤더 + JSON 청크 + BIN 청크)
+        const totalLength = 12 + 8 + jsonLength + (binLength > 0 ? 8 + binLength : 0);
+        headerView.setUint32(8, totalLength, true);
         
         // JSON 청크 헤더
         const jsonChunkHeader = new ArrayBuffer(8);
         const jsonChunkView = new DataView(jsonChunkHeader);
-        // JSON 청크 길이
         jsonChunkView.setUint32(0, jsonLength, true);
-        // JSON 청크 타입 (0x4E4F534A = "JSON")
-        jsonChunkView.setUint32(4, 0x4E4F534A, true);
-        
-        // 모든 버퍼 결합
-        const totalLength = header.byteLength + jsonChunkHeader.byteLength + alignedJsonBuffer.byteLength;
+        jsonChunkView.setUint32(4, 0x4E4F534A, true); // "JSON"
+
+        // 결과 버퍼 생성
         const result = new Uint8Array(totalLength);
         let offset = 0;
         
+        // 헤더 추가
         result.set(new Uint8Array(header), offset);
         offset += header.byteLength;
         
+        // JSON 청크 헤더 + 데이터 추가
         result.set(new Uint8Array(jsonChunkHeader), offset);
         offset += jsonChunkHeader.byteLength;
-        
         result.set(alignedJsonBuffer, offset);
+        offset += alignedJsonBuffer.byteLength;
+
+        // BIN 청크 추가 (있는 경우)
+        if (binLength > 0) {
+            const binChunkHeader = new ArrayBuffer(8);
+            const binChunkView = new DataView(binChunkHeader);
+            binChunkView.setUint32(0, binLength, true);
+            binChunkView.setUint32(4, 0x004E4942, true); // "BIN\0"
+            
+            result.set(new Uint8Array(binChunkHeader), offset);
+            offset += binChunkHeader.byteLength;
+            result.set(alignedBinBuffer, offset);
+        }
         
         return result;
     }
@@ -488,6 +550,422 @@ export class ConvertCommand {
                 scene: this.scene
             }
         };
+    }
+
+    /**
+     * OSM 객체를 실제 3D 메시 지오메트리로 변환
+     */
+    generateMeshGeometry(obj) {
+        if (!obj.coordinates || obj.coordinates.length === 0) {
+            return null;
+        }
+
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+        
+        // OSM 태그에 따른 높이 결정
+        const height = this.getObjectHeight(obj);
+        const color = this.getObjectColor(obj);
+
+        if (obj.type === 'building' || (obj.tags && obj.tags.building)) {
+            // 건물: 돌출된 폴리곤 생성
+            return this.generateBuildingGeometry(obj.coordinates, height, color);
+        } else if (obj.type === 'highway' || (obj.tags && obj.tags.highway)) {
+            // 도로: 선형 지오메트리를 폭이 있는 메시로 변환
+            return this.generateRoadGeometry(obj.coordinates, obj.tags, color);
+        } else if (obj.type === 'area' || obj.coordinates[0] === obj.coordinates[obj.coordinates.length - 1]) {
+            // 폴리곤 영역: 평면 메시 생성
+            return this.generateAreaGeometry(obj.coordinates, color);
+        } else {
+            // 기본: 선형 지오메트리
+            return this.generateLineGeometry(obj.coordinates, color);
+        }
+    }
+
+    /**
+     * 건물 지오메트리 생성 (높이가 있는 폴리곤)
+     */
+    generateBuildingGeometry(coordinates, height, color) {
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+
+        // 바닥과 천장 생성
+        const groundVertices = [];
+        const roofVertices = [];
+        
+        for (let i = 0; i < coordinates.length - 1; i++) {
+            const [lon, lat] = coordinates[i];
+            // 간단한 좌표 변환 (실제로는 더 복잡한 지리 좌표 변환 필요)
+            const x = (lon - 126.97) * 100000; // 임시 변환
+            const z = -(lat - 37.56) * 100000; // 임시 변환
+            
+            groundVertices.push(x, 0, z);
+            roofVertices.push(x, height, z);
+        }
+
+        // 삼각형 분할 (간단한 팬 방식)
+        for (let i = 2; i < groundVertices.length / 3; i++) {
+            // 바닥 삼각형
+            vertices.push(
+                groundVertices[0], groundVertices[1], groundVertices[2],
+                groundVertices[(i-1)*3], groundVertices[(i-1)*3+1], groundVertices[(i-1)*3+2],
+                groundVertices[i*3], groundVertices[i*3+1], groundVertices[i*3+2]
+            );
+            normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
+            colors.push(...color, ...color, ...color);
+
+            // 천장 삼각형 (역순)
+            vertices.push(
+                roofVertices[0], roofVertices[1], roofVertices[2],
+                roofVertices[i*3], roofVertices[i*3+1], roofVertices[i*3+2],
+                roofVertices[(i-1)*3], roofVertices[(i-1)*3+1], roofVertices[(i-1)*3+2]
+            );
+            normals.push(0, -1, 0, 0, -1, 0, 0, -1, 0);
+            colors.push(...color, ...color, ...color);
+        }
+
+        // 벽면 생성
+        for (let i = 0; i < groundVertices.length / 3; i++) {
+            const nextI = (i + 1) % (groundVertices.length / 3);
+            
+            const x1 = groundVertices[i*3], z1 = groundVertices[i*3+2];
+            const x2 = groundVertices[nextI*3], z2 = groundVertices[nextI*3+2];
+            
+            // 벽면의 두 삼각형
+            vertices.push(
+                x1, 0, z1,     x2, 0, z2,     x1, height, z1,
+                x2, 0, z2,     x2, height, z2, x1, height, z1
+            );
+            
+            // 법선 계산 (간단한 벽면 법선)
+            const dx = x2 - x1, dz = z2 - z1;
+            const len = Math.sqrt(dx*dx + dz*dz);
+            const nx = -dz / len, nz = dx / len;
+            
+            for (let j = 0; j < 6; j++) {
+                normals.push(nx, 0, nz);
+                colors.push(...color);
+            }
+        }
+
+        return {
+            vertices: new Float32Array(vertices),
+            normals: new Float32Array(normals),
+            colors: new Float32Array(colors)
+        };
+    }
+
+    /**
+     * 도로 지오메트리 생성
+     */
+    generateRoadGeometry(coordinates, tags, color) {
+        const width = this.getRoadWidth(tags);
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+
+        for (let i = 0; i < coordinates.length - 1; i++) {
+            const [lon1, lat1] = coordinates[i];
+            const [lon2, lat2] = coordinates[i + 1];
+            
+            const x1 = (lon1 - 126.97) * 100000;
+            const z1 = -(lat1 - 37.56) * 100000;
+            const x2 = (lon2 - 126.97) * 100000;
+            const z2 = -(lat2 - 37.56) * 100000;
+            
+            // 도로 세그먼트의 방향과 수직 방향 계산
+            const dx = x2 - x1, dz = z2 - z1;
+            const len = Math.sqrt(dx*dx + dz*dz);
+            const perpX = -dz / len * width / 2;
+            const perpZ = dx / len * width / 2;
+            
+            // 도로 세그먼트의 사각형 메시
+            vertices.push(
+                x1 + perpX, 0, z1 + perpZ,
+                x1 - perpX, 0, z1 - perpZ,
+                x2 + perpX, 0, z2 + perpZ,
+                x1 - perpX, 0, z1 - perpZ,
+                x2 - perpX, 0, z2 - perpZ,
+                x2 + perpX, 0, z2 + perpZ
+            );
+            
+            for (let j = 0; j < 6; j++) {
+                normals.push(0, 1, 0);
+                colors.push(...color);
+            }
+        }
+
+        return {
+            vertices: new Float32Array(vertices),
+            normals: new Float32Array(normals),
+            colors: new Float32Array(colors)
+        };
+    }
+
+    /**
+     * 평면 영역 지오메트리 생성
+     */
+    generateAreaGeometry(coordinates, color) {
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+
+        // 간단한 삼각형 분할
+        for (let i = 2; i < coordinates.length; i++) {
+            const [lon1, lat1] = coordinates[0];
+            const [lon2, lat2] = coordinates[i-1];
+            const [lon3, lat3] = coordinates[i];
+            
+            const x1 = (lon1 - 126.97) * 100000;
+            const z1 = -(lat1 - 37.56) * 100000;
+            const x2 = (lon2 - 126.97) * 100000;
+            const z2 = -(lat2 - 37.56) * 100000;
+            const x3 = (lon3 - 126.97) * 100000;
+            const z3 = -(lat3 - 37.56) * 100000;
+            
+            vertices.push(x1, 0, z1, x2, 0, z2, x3, 0, z3);
+            normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
+            colors.push(...color, ...color, ...color);
+        }
+
+        return {
+            vertices: new Float32Array(vertices),
+            normals: new Float32Array(normals),
+            colors: new Float32Array(colors)
+        };
+    }
+
+    /**
+     * 선형 지오메트리 생성 (기본)
+     */
+    generateLineGeometry(coordinates, color) {
+        const vertices = [];
+        const normals = [];
+        const colors = [];
+
+        for (let i = 0; i < coordinates.length - 1; i++) {
+            const [lon1, lat1] = coordinates[i];
+            const [lon2, lat2] = coordinates[i + 1];
+            
+            const x1 = (lon1 - 126.97) * 100000;
+            const z1 = -(lat1 - 37.56) * 100000;
+            const x2 = (lon2 - 126.97) * 100000;
+            const z2 = -(lat2 - 37.56) * 100000;
+            
+            // 선을 얇은 사각형으로 표현
+            const width = 0.5;
+            const dx = x2 - x1, dz = z2 - z1;
+            const len = Math.sqrt(dx*dx + dz*dz);
+            const perpX = -dz / len * width;
+            const perpZ = dx / len * width;
+            
+            vertices.push(
+                x1 + perpX, 0, z1 + perpZ,
+                x1 - perpX, 0, z1 - perpZ,
+                x2 + perpX, 0, z2 + perpZ,
+                x1 - perpX, 0, z1 - perpZ,
+                x2 - perpX, 0, z2 - perpZ,
+                x2 + perpX, 0, z2 + perpZ
+            );
+            
+            for (let j = 0; j < 6; j++) {
+                normals.push(0, 1, 0);
+                colors.push(...color);
+            }
+        }
+
+        return {
+            vertices: new Float32Array(vertices),
+            normals: new Float32Array(normals),
+            colors: new Float32Array(colors)
+        };
+    }
+
+    /**
+     * Accessor 생성 (GLTF 버퍼 접근자)
+     */
+    createAccessor(gltfData, bufferData, typedArray, type, offset) {
+        // BufferView 생성
+        const bufferView = {
+            buffer: 0,
+            byteOffset: offset,
+            byteLength: typedArray.byteLength,
+            target: 34962 // ARRAY_BUFFER
+        };
+        gltfData.bufferViews.push(bufferView);
+        const bufferViewIndex = gltfData.bufferViews.length - 1;
+
+        // Min/Max 계산
+        const components = type === 'VEC3' ? 3 : (type === 'VEC2' ? 2 : 1);
+        const min = new Array(components).fill(Infinity);
+        const max = new Array(components).fill(-Infinity);
+        
+        for (let i = 0; i < typedArray.length; i += components) {
+            for (let j = 0; j < components; j++) {
+                min[j] = Math.min(min[j], typedArray[i + j]);
+                max[j] = Math.max(max[j], typedArray[i + j]);
+            }
+        }
+
+        // Accessor 생성
+        const accessor = {
+            bufferView: bufferViewIndex,
+            componentType: 5126, // FLOAT
+            count: typedArray.length / components,
+            type: type,
+            min: min,
+            max: max
+        };
+        gltfData.accessors.push(accessor);
+        
+        // 버퍼 데이터에 추가
+        bufferData.push(typedArray.buffer);
+        
+        return gltfData.accessors.length - 1;
+    }
+
+    /**
+     * 기본 재질들 추가
+     */
+    addDefaultMaterials(gltfData) {
+        const materials = [
+            {
+                name: "건물_콘크리트",
+                pbrMetallicRoughness: {
+                    baseColorFactor: [0.7, 0.7, 0.7, 1.0],
+                    metallicFactor: 0.0,
+                    roughnessFactor: 0.8
+                },
+                alphaMode: "OPAQUE",
+                doubleSided: false
+            },
+            {
+                name: "도로_아스팔트",
+                pbrMetallicRoughness: {
+                    baseColorFactor: [0.3, 0.3, 0.3, 1.0],
+                    metallicFactor: 0.0,
+                    roughnessFactor: 0.9
+                },
+                alphaMode: "OPAQUE",
+                doubleSided: false
+            },
+            {
+                name: "자연_녹지",
+                pbrMetallicRoughness: {
+                    baseColorFactor: [0.2, 0.6, 0.2, 1.0],
+                    metallicFactor: 0.0,
+                    roughnessFactor: 0.7
+                },
+                alphaMode: "OPAQUE",
+                doubleSided: false
+            },
+            {
+                name: "물_표면",
+                pbrMetallicRoughness: {
+                    baseColorFactor: [0.1, 0.3, 0.8, 1.0],
+                    metallicFactor: 0.0,
+                    roughnessFactor: 0.1
+                },
+                alphaMode: "OPAQUE",
+                doubleSided: false
+            }
+        ];
+
+        gltfData.materials.push(...materials);
+    }
+
+    /**
+     * 객체의 재질 인덱스 결정
+     */
+    getMaterialIndexForObject(obj) {
+        if (obj.type === 'building' || (obj.tags && obj.tags.building)) {
+            return 0; // 건물_콘크리트
+        } else if (obj.type === 'highway' || (obj.tags && obj.tags.highway)) {
+            return 1; // 도로_아스팔트
+        } else if (obj.tags && (obj.tags.natural === 'water' || obj.tags.waterway)) {
+            return 3; // 물_표면
+        } else {
+            return 2; // 자연_녹지
+        }
+    }
+
+    /**
+     * 객체의 높이 결정
+     */
+    getObjectHeight(obj) {
+        if (obj.tags) {
+            if (obj.tags.height) {
+                return parseFloat(obj.tags.height.replace('m', ''));
+            }
+            if (obj.tags['building:levels']) {
+                return parseInt(obj.tags['building:levels']) * 3; // 층당 3m
+            }
+            if (obj.tags.building) {
+                return 9; // 기본 건물 높이
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * 객체의 색상 결정
+     */
+    getObjectColor(obj) {
+        if (obj.tags) {
+            if (obj.tags.building) return [0.7, 0.7, 0.7];
+            if (obj.tags.highway) return [0.3, 0.3, 0.3];
+            if (obj.tags.natural === 'water') return [0.1, 0.3, 0.8];
+            if (obj.tags.landuse === 'forest') return [0.2, 0.6, 0.2];
+        }
+        return [0.5, 0.5, 0.5]; // 기본 색상
+    }
+
+    /**
+     * 도로 폭 결정
+     */
+    getRoadWidth(tags) {
+        if (!tags || !tags.highway) return 4; // 기본값
+        
+        switch (tags.highway) {
+            case 'motorway': return 12;
+            case 'trunk': return 10;
+            case 'primary': return 8;
+            case 'secondary': return 6;
+            case 'residential': return 4;
+            case 'footway': return 2;
+            default: return 4;
+        }
+    }
+
+    /**
+     * 여러 버퍼를 하나로 결합
+     */
+    concatenateBuffers(buffers) {
+        const totalLength = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
+        const result = new ArrayBuffer(totalLength);
+        const view = new Uint8Array(result);
+        
+        let offset = 0;
+        for (const buffer of buffers) {
+            view.set(new Uint8Array(buffer), offset);
+            offset += buffer.byteLength;
+        }
+        
+        return result;
+    }
+
+    /**
+     * ArrayBuffer를 Base64로 변환
+     */
+    arrayBufferToBase64(buffer) {
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
     }
 }
 
